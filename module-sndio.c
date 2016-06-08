@@ -98,8 +98,6 @@ struct userdata {
 	int		 sink_running;
 	unsigned int	 volume;
 
-	pa_rtpoll_item	*rtpoll_item_mio;
-	struct mio_hdl	*mio;
 	int		 set_master;		/* master we're writing */
 	int		 last_master;		/* last master we wrote */
 	int		 feedback_master;	/* actual master */
@@ -110,123 +108,6 @@ struct userdata {
 #define MSGMAX		0x100
 	uint8_t		 mmsg[MSGMAX];
 };
-
-static void
-sndio_midi_message(struct userdata *u, const char *msg, size_t len)
-{
-	struct sysex	*x = (struct sysex *)msg;
-
-	if (len == SYSEX_SIZE(master) &&
-	    x->start == SYSEX_START &&
-	    x->type == SYSEX_TYPE_RT &&
-	    x->id0 == SYSEX_CONTROL &&
-	    x->id1 == SYSEX_MASTER) {
-		u->feedback_master = x->u.master.coarse;
-		pa_log_debug("MIDI master level is %i", u->feedback_master);
-		return;
-	}
-
-	if (len == SYSEX_SIZE(empty) &&
-	    x->start == SYSEX_START &&
-	    x->type == SYSEX_TYPE_EDU &&
-	    x->id0 == SYSEX_AUCAT &&
-	    x->id1 == SYSEX_AUCAT_DUMPEND) {
-		pa_log_debug("MIDI config done");
-		u->mready = 1;
-		return;
-	}
-}
-
-static void
-sndio_midi_input(struct userdata *u, const unsigned char *buf, unsigned int len)
-{
-	static unsigned int voice_len[] = { 3, 3, 3, 3, 2, 2, 3 };
-	static unsigned int common_len[] = { 0, 2, 3, 2, 0, 0, 1, 1 };
-	unsigned int c;
-
-	for (; len > 0; len--) {
-		c = *buf;
-		buf++;
-
-		if (c >= 0xf8) {
-			/* clock events not used yet */
-		} else if (c >= 0xf0) {
-			if (u->mst == SYSEX_START &&
-			    c == SYSEX_END &&
-			    u->midx < MSGMAX) {
-				u->mmsg[u->midx++] = c;
-				sndio_midi_message(u, u->mmsg, u->midx);
-				continue;
-			}
-			u->mmsg[0] = c;
-			u->mlen = common_len[c & 7];
-			u->mst = c;
-			u->midx = 1;
-		} else if (c >= 0x80) {
-			u->mmsg[0] = c;
-			u->mlen = voice_len[(c >> 4) & 7];
-			u->mst = c;
-			u->midx = 1;
-		} else if (u->mst) {
-			if (u->midx == MSGMAX)
-				continue;	       
-			if (u->midx == 0)
-				u->mmsg[u->midx++] = u->mst;
-			u->mmsg[u->midx++] = c;
-			if (u->midx == u->mlen) {
-				sndio_midi_message(u, u->mmsg, u->midx);
-				u->midx = 0;
-			}
-		}
-	}
-}
-
-static int
-sndio_midi_setup(struct userdata *u)
-{
-	static const unsigned char dumpreq[] = {
-		SYSEX_START,
-		SYSEX_TYPE_EDU,
-		0,   
-		SYSEX_AUCAT,
-		SYSEX_AUCAT_DUMPREQ,
-		SYSEX_END
-	};
-	size_t		s;
-	int		n;
-	unsigned char	buf[MSGMAX];
-	const char	*midi_port;
-
-	midi_port = getenv("AUDIODEVICE");
-	if (midi_port == NULL)
-		midi_port = "snd/0";
-
-	u->mio = mio_open(midi_port, MIO_IN | MIO_OUT, 0);
-	if (u->mio == NULL) {
-		pa_log("mio_open failed");
-		return (-1);
-	}
-	n = mio_nfds(u->mio);
-	u->rtpoll_item_mio = pa_rtpoll_item_new(u->rtpoll, PA_RTPOLL_NEVER, n);
-	if (u->rtpoll_item_mio == NULL) {
-		pa_log("could not allocate mio poll item");
-		return (-1);
-	}
-
-	s = mio_write(u->mio, dumpreq, sizeof(dumpreq));
-	pa_log_debug("mio_write: %zu / %zu", s, sizeof(dumpreq));
-	while (!u->mready) {
-		s = mio_read(u->mio, buf, sizeof buf);
-		pa_log_debug("mio_read: %zu", s);
-		if (s == 0) {
-			pa_log("mio_read()");
-			return (-1);
-		}
-		sndio_midi_input(u, buf, s);
-	}
-	u->set_master = u->last_master = u->feedback_master;
-	return (0);
-}
 
 static void
 sndio_on_volume(void *arg, unsigned int vol)
@@ -373,19 +254,16 @@ sndio_thread(void *arg)
 	struct userdata	*u = arg;
 	int		 ret;
 	short		 revents, events;
-	struct pollfd	*fds_sio, *fds_mio;
+	struct pollfd	*fds_sio;
 	size_t		 w, r, l;
 	char		*p;
-	char		 buf[256];
 	struct pa_memchunk memchunk;
-	struct sysex	 msg;
 
 	pa_log_debug("sndio thread starting up");
 
 	pa_thread_mq_install(&u->thread_mq);
 
 	fds_sio = pa_rtpoll_item_get_pollfd(u->rtpoll_item, NULL);
-	fds_mio = pa_rtpoll_item_get_pollfd(u->rtpoll_item_mio, NULL);
 
 	revents = 0;
 	for (;;) {
@@ -450,40 +328,10 @@ sndio_thread(void *arg)
 
 		sio_pollfd(u->hdl, fds_sio, events);
 
-		mio_pollfd(u->mio, fds_mio, POLLIN);
-
 		if ((ret = pa_rtpoll_run(u->rtpoll)) < 0)
 	    		goto fail;
 		if (ret == 0)
 	    		goto finish;
-
-		revents = mio_revents(u->mio, fds_mio);
-		if (revents & POLLHUP) {
-			pa_log("mio POLLHUP!");
-			break;
-		}
-		if (revents && POLLIN) {
-			r = mio_read(u->mio, buf, sizeof buf);
-			if (mio_eof(u->mio)) {
-				pa_log("mio error");
-				break;
-			}
-			if (r)
-				sndio_midi_input(u, buf, r);
-		}
-		if (u->set_master != u->last_master) {
-			u->last_master = u->set_master;
-			msg.start = SYSEX_START;
-			msg.type = SYSEX_TYPE_RT;
-			msg.id0 = SYSEX_CONTROL;
-			msg.id1 = SYSEX_MASTER;
-			msg.u.master.fine = 0;
-			msg.u.master.coarse = u->set_master;
-			msg.u.master.end = SYSEX_END;
-			if (mio_write(u->mio, &msg, SYSEX_SIZE(master)) !=
-			    SYSEX_SIZE(master))
-				pa_log("set master: couldn't write message");
-		}
 
 		revents = sio_revents(u->hdl, fds_sio);
 
@@ -767,9 +615,6 @@ pa__init(pa_module *m)
 
 	pa_memchunk_reset(&u->memchunk);
 
-	if (sndio_midi_setup(u) == -1)
-		goto fail;
-
 	if ((u->thread = pa_thread_new("sndio", sndio_thread, u)) == NULL) {
 		pa_log("Failed to create sndio thread.");
 		goto fail;
@@ -819,13 +664,9 @@ pa__done(pa_module *m)
 		pa_memblock_unref(u->memchunk.memblock);
 	if (u->rtpoll_item)
 		pa_rtpoll_item_free(u->rtpoll_item);
-	if (u->rtpoll_item_mio)
-		pa_rtpoll_item_free(u->rtpoll_item_mio);
 	if (u->rtpoll)
 		pa_rtpoll_free(u->rtpoll);
 	if (u->hdl)
 		sio_close(u->hdl);
-	if (u->mio)
-		mio_close(u->mio);
 	free(u);
 }
