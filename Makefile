@@ -1,5 +1,6 @@
 MKDIR?=	mkdir -p
 INSTALL_LIB?=	install -s -m 444
+STAGEDIR?=
 LOCALBASE?=	/usr/local
 PULSE_VERSION?=	8.0
 PULSE_MODDIR?=	${LOCALBASE}/lib/pulse-${PULSE_VERSION}/modules
@@ -22,8 +23,8 @@ module-sndio.so: module-sndio.o
 		-o module-sndio.so
 
 install: all
-	${MKDIR} ${PULSE_MODDIR}
-	${INSTALL_LIB} module-sndio.so ${PULSE_MODDIR}
+	${MKDIR} ${STAGEDIR}${PULSE_MODDIR}
+	${INSTALL_LIB} module-sndio.so ${STAGEDIR}${PULSE_MODDIR}
 
 clean:
 	rm -f module-sndio.o module-sndio.so
