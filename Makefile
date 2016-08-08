@@ -1,24 +1,29 @@
-PULSEAUDIO_SRC?=.
-
+MKDIR?=	mkdir -p
+INSTALL_LIB?=	install -s -m 444
 LOCALBASE?=	/usr/local
-
+PULSE_VERSION?=	8.0
+PULSE_MODDIR?=	${LOCALBASE}/lib/pulse-${PULSE_VERSION}/modules
 CFLAGS+=	`pkg-config --cflags libpulse`
-LDFLAGS+=	`pkg-config --libs libpulse`
+CFLAGS+=	-fPIC -I.
 
-CFLAGS+=	-fPIC -DPIC -I.
+all: module-sndio.so
 
 module-sndio.so: module-sndio.o
 	${CC} -shared module-sndio.o \
 		-Wl,-rpath -Wl,${LOCALBASE}/lib \
 		-Wl,-rpath -Wl,${LOCALBASE}/lib/pulseaudio \
 		${LDFLAGS} \
+		-L${LOCALBASE}/lib \
 		-L${LOCALBASE}/lib/pulseaudio \
-		-lpulsecore-8.0 \
-		-lpulsecommon-8.0 \
+		-lpulsecore-${PULSE_VERSION} \
+		-lpulsecommon-${PULSE_VERSION} \
+		-lpulse \
 		-lsndio \
 		-o module-sndio.so
 
-
+install: all
+	${MKDIR} ${PULSE_MODDIR}
+	${INSTALL_LIB} module-sndio.so ${PULSE_MODDIR}
 
 clean:
 	rm -f module-sndio.o module-sndio.so
