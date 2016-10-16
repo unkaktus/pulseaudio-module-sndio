@@ -37,7 +37,6 @@
 #include <pulsecore/poll.h>
 
 #include "module-sndio-symdef.h"
-#include "module-sndio-sysex.h"
 
 /*
  * TODO
@@ -101,12 +100,6 @@ struct userdata {
 	int		 set_master;		/* master we're writing */
 	int		 last_master;		/* last master we wrote */
 	int		 feedback_master;	/* actual master */
-	int		 mst;
-	int		 midx;
-	int		 mlen;
-	int		 mready;
-#define MSGMAX		0x100
-	uint8_t		 mmsg[MSGMAX];
 };
 
 static void
