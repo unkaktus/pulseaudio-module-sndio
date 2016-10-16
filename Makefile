@@ -1,21 +1,22 @@
 MKDIR?=	mkdir -p
+PKGCONF?=	pkg-config
 INSTALL_LIB?=	install -s -m 444
 STAGEDIR?=
-LOCALBASE?=	/usr/local
-PULSE_VERSION?=	8.0
-PULSE_MODDIR?=	${LOCALBASE}/lib/pulse-${PULSE_VERSION}/modules
-CFLAGS+=	`pkg-config --cflags libpulse`
-CFLAGS+=	-fPIC -I.
+PULSE_VERSION!=	pulseaudio --version | cut -d' ' -f 2
+PULSE_LIBDIR?=	`${PKGCONF} --variable=libdir libpulse`
+PULSE_MODDIR?=	`${PKGCONF} --variable=modlibexecdir libpulse`
+CFLAGS+=	-fPIC -I. `${PKGCONF} --cflags libpulse`
+LDFLAGS+=	`${PKGCONF} --libs libpulse`
 
 all: module-sndio.so
 
 module-sndio.so: module-sndio.o
 	${CC} -shared module-sndio.o \
-		-Wl,-rpath -Wl,${LOCALBASE}/lib \
-		-Wl,-rpath -Wl,${LOCALBASE}/lib/pulseaudio \
+		-Wl,-rpath -Wl,${PULSE_LIBDIR} \
+		-Wl,-rpath -Wl,${PULSE_LIBDIR}/pulseaudio \
 		${LDFLAGS} \
-		-L${LOCALBASE}/lib \
-		-L${LOCALBASE}/lib/pulseaudio \
+		-L${PULSE_LIBDIR} \
+		-L${PULSE_LIBDIR}/pulseaudio \
 		-lpulsecore-${PULSE_VERSION} \
 		-lpulsecommon-${PULSE_VERSION} \
 		-lpulse \
