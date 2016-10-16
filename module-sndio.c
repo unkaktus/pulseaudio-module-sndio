@@ -25,7 +25,6 @@
 #include <pulsecore/core-error.h>
 #include <pulsecore/thread.h>
 #include <pulsecore/sink.h>
-#include <pulsecore/source.h>
 #include <pulsecore/module.h>
 #include <pulsecore/sample-util.h>
 #include <pulsecore/core-util.h>
@@ -46,17 +45,13 @@
  */
 
 PA_MODULE_AUTHOR("Eric Faurot");
-PA_MODULE_DESCRIPTION("OpenBSD sndio sink/source");
+PA_MODULE_DESCRIPTION("OpenBSD sndio sink");
 PA_MODULE_VERSION("0.0");
 PA_MODULE_LOAD_ONCE(false);
 PA_MODULE_USAGE(
 	"sink_name=<name for the sink> "
 	"sink_properties=<properties for the sink> "
-	"source_name=<name for the source> "
-	"source_properties=<properties for the source> "
 	"device=<sndio device> "
-	"record=<enable source?> "
-	"playback=<enable sink?> "
 	"format=<sample format> "
 	"rate=<sample rate> "
 	"channels=<number of channels> "
@@ -65,8 +60,6 @@ PA_MODULE_USAGE(
 static const char* const modargs[] = {
 	"sink_name",
 	"sink_properties",
-	"source_name",
-	"source_properties",
 	"device",
 	"record",
 	"playback",
@@ -81,7 +74,6 @@ struct userdata {
 	pa_core		*core;
 	pa_module	*module;
 	pa_sink		*sink;
-	pa_source	*source;
 
 	pa_thread	*thread;
 	pa_thread_mq	 thread_mq;
@@ -191,56 +183,6 @@ sndio_sink_message(pa_msgobject *o, int code, void *data, int64_t offset,
 	return (ret);
 }
 
-static int
-sndio_source_message(pa_msgobject *o, int code, void *data, int64_t offset,
-    pa_memchunk *chunk)
-{
-	struct userdata		*u = PA_SOURCE(o)->userdata;
-	pa_source_state_t	 state;
-	int			 ret;
-
-	pa_log_debug(
-	    "sndio_source_msg: obj=%p code=%i data=%p offset=%lli chunk=%p",
-	    o, code, data, offset, chunk);
-	switch (code) {
-	case PA_SOURCE_MESSAGE_GET_LATENCY:
-		pa_log_debug("source:PA_SOURCE_MESSAGE_GET_LATENCY");
-		*(pa_usec_t*)data = pa_bytes_to_usec(u->bufsz,
-		    &u->source->sample_spec);
-		return (0);
-	case PA_SOURCE_MESSAGE_SET_STATE:
-		pa_log_debug("source:PA_SOURCE_MESSAGE_SET_STATE ");
-		state = (pa_source_state_t)(data);
-		switch (state) {
-		case PA_SOURCE_SUSPENDED:
-			pa_log_debug("SUSPEND");
-			sio_stop(u->hdl);
-			break;
-		case PA_SOURCE_IDLE:
-		case PA_SOURCE_RUNNING:
-			pa_log_debug((code == PA_SOURCE_IDLE)?"IDLE":"RUNNING");
-			sio_start(u->hdl);
-			break;
-		case PA_SOURCE_INVALID_STATE:
-			pa_log_debug("INVALID_STATE");
-			break;
-		case PA_SOURCE_UNLINKED:
-			pa_log_debug("UNLINKED");
-			break;
-		case PA_SOURCE_INIT:
-			pa_log_debug("INIT");
-			break;
-		}
-		break;
-	default:
-		pa_log_debug("source:PA_SOURCE_???");
-	}
-
-	ret = pa_source_process_msg(o, code, data, offset, chunk);
-
-	return (ret);
-}
-
 static void
 sndio_thread(void *arg)
 {
@@ -287,28 +229,7 @@ sndio_thread(void *arg)
 			}
 		}
 
-		if (u->source &&
-		    PA_SOURCE_IS_OPENED(u->source->thread_info.state)
-		    && (revents & POLLIN)) {
-			memchunk.memblock = pa_memblock_new(u->core->mempool,
-			    (size_t) -1);
-			l = pa_memblock_get_length(memchunk.memblock);
-			if (l > u->bufsz)
-				l = u->bufsz;
-			p = pa_memblock_acquire(memchunk.memblock);
-			r = sio_read(u->hdl, p, l);
-			pa_memblock_release(memchunk.memblock);
-			pa_log_debug("read %zu bytes of %zu", r, l);
-			memchunk.index = 0;
-			memchunk.length = r;
-			pa_source_post(u->source, &memchunk);
-			pa_memblock_unref(memchunk.memblock);
-		}
-
 		events = 0;
-		if (u->source &&
-		    PA_SOURCE_IS_OPENED(u->source->thread_info.state))
-			events |= POLLIN;
 		if (u->sink &&
 		    PA_SINK_IS_OPENED(u->sink->thread_info.state))
 			events |= POLLOUT;
@@ -348,7 +269,6 @@ sndio_thread(void *arg)
 int
 pa__init(pa_module *m)
 {
-	bool			 record = false, playback = true;
 	pa_modargs		*ma = NULL;
 	pa_sample_spec		 ss;
 	pa_channel_map		 map;
@@ -356,7 +276,6 @@ pa__init(pa_module *m)
 	pa_source_new_data	 source;
 
 	struct sio_par		 par;
-	unsigned int		 mode = 0;
 	char			 buf[256];
 	const char		*name, *dev;
 	struct userdata		*u = NULL;
@@ -378,24 +297,8 @@ pa__init(pa_module *m)
 		goto fail;
 	}
 
-	if (pa_modargs_get_value_boolean(ma, "record", &record) < 0 ||
-	    pa_modargs_get_value_boolean(ma, "playback", &playback) < 0) {
-		pa_log("record= and playback= expect boolean argument");
-		goto fail;
-	}
-
-	if (playback)
-		mode |= SIO_PLAY;
-	if (record)
-		mode |= SIO_REC;
-
-	if (!mode) {
-		pa_log("Neither playback nor record enabled for device");
-		goto fail;
-	}
-
 	dev = pa_modargs_get_value(ma, "device", NULL);
-	if ((u->hdl = sio_open(dev, mode, 1)) == NULL) {
+	if ((u->hdl = sio_open(dev, SIO_PLAY, 1)) == NULL) {
 		pa_log("Cannot open sndio device.");
 		goto fail;
 	}
@@ -411,8 +314,7 @@ pa__init(pa_module *m)
 
 	sio_initpar(&par);
 	par.rate = ss.rate;
-	par.pchan = (mode & SIO_PLAY) ? ss.channels : 0;
-	par.rchan = (mode & SIO_REC) ? ss.channels : 0;
+	par.pchan = ss.channels;
 	par.sig = 1;
 
 	switch (ss.format) {
@@ -476,7 +378,7 @@ pa__init(pa_module *m)
 	/* XXX check sample format */
 
 	ss.rate = u->par.rate;
-	ss.channels = (mode & SIO_PLAY) ? u->par.pchan : u->par.rchan;
+	ss.channels = u->par.pchan;
 	/* XXX what to do with map? */
 
 	u->bufsz = u->par.bufsz * u->par.bps * u->par.pchan;
@@ -488,120 +390,53 @@ pa__init(pa_module *m)
 		goto fail;
 	}
 
-	if (mode & SIO_PLAY) {
+	pa_sink_new_data_init(&sink);
+	sink.driver = __FILE__;
+	sink.module = m;
+	sink.namereg_fail = true;
+	name = pa_modargs_get_value(ma, "sink_name", NULL);
+	if (name == NULL) {
+		sink.namereg_fail = false;
+		snprintf(buf, sizeof (buf), "sndio-sink");
+		name = buf;
+	}
+	pa_sink_new_data_set_name(&sink, name);
+	pa_sink_new_data_set_sample_spec(&sink, &ss);
+	pa_sink_new_data_set_channel_map(&sink, &map);
+	pa_proplist_sets(sink.proplist,
+			 PA_PROP_DEVICE_STRING, dev ? dev : "default");
+	pa_proplist_sets(sink.proplist,
+			 PA_PROP_DEVICE_API, "sndio");
+	pa_proplist_sets(sink.proplist,
+			 PA_PROP_DEVICE_DESCRIPTION, dev ? dev : "default");
+	pa_proplist_sets(sink.proplist,
+			 PA_PROP_DEVICE_ACCESS_MODE, "serial");
 
-		pa_sink_new_data_init(&sink);
-		sink.driver = __FILE__;
-		sink.module = m;
-		sink.namereg_fail = true;
-		name = pa_modargs_get_value(ma, "sink_name", NULL);
-		if (name == NULL) {
-			sink.namereg_fail = false;
-			snprintf(buf, sizeof (buf), "sndio-sink");
-			name = buf;
-		}
-		pa_sink_new_data_set_name(&sink, name);
-		pa_sink_new_data_set_sample_spec(&sink, &ss);
-		pa_sink_new_data_set_channel_map(&sink, &map);
-		pa_proplist_sets(sink.proplist,
-		    PA_PROP_DEVICE_STRING, dev ? dev : "default");
-		pa_proplist_sets(sink.proplist,
-		    PA_PROP_DEVICE_API, "sndio");
-		pa_proplist_sets(sink.proplist,
-		    PA_PROP_DEVICE_DESCRIPTION, dev ? dev : "default");
-		pa_proplist_sets(sink.proplist,
-		    PA_PROP_DEVICE_ACCESS_MODE, "serial");
-/*
-		pa_proplist_setf(sink.proplist,
-		    PA_PROP_DEVICE_BUFFERING_BUFFER_SIZE, "%u",
-		    u->par.bufsz * u->par.bps * u->par.pchan);
-*/
-
-/*
-		pa_proplist_setf(sink.proplist,
-		    PA_PROP_DEVICE_BUFFERING_FRAGMENT_SIZE, "%lu",
-		    (unsigned long) (u->out_fragment_size));
-*/
-		if (pa_modargs_get_proplist(ma, "sink_properties",
-		    sink.proplist, PA_UPDATE_REPLACE) < 0) {
-			pa_log("Invalid sink properties");
-			pa_sink_new_data_done(&sink);
-			goto fail;
-		}
-
-		u->sink = pa_sink_new(m->core, &sink, PA_SINK_LATENCY);
+	if (pa_modargs_get_proplist(ma, "sink_properties",
+				    sink.proplist, PA_UPDATE_REPLACE) < 0) {
+		pa_log("Invalid sink properties");
 		pa_sink_new_data_done(&sink);
-		if (u->sink == NULL) {
-			pa_log("Failed to create sync");
-			goto fail;
-		}
-
-		u->sink->userdata = u;
-		u->sink->parent.process_msg = sndio_sink_message;
-		pa_sink_set_asyncmsgq(u->sink, u->thread_mq.inq);
-		pa_sink_set_rtpoll(u->sink, u->rtpoll);
-		pa_sink_set_fixed_latency(u->sink,
-		    pa_bytes_to_usec(u->bufsz, &u->sink->sample_spec));
-
-		sio_onvol(u->hdl, sndio_on_volume, u);
-		pa_sink_set_get_volume_callback(u->sink, sndio_get_volume);
-		pa_sink_set_set_volume_callback(u->sink, sndio_set_volume);
-		u->sink->n_volume_steps = SIO_MAXVOL + 1;
+		goto fail;
 	}
 
-	if (mode & SIO_REC) {
-		pa_source_new_data_init(&source);
-		source.driver = __FILE__;
-		source.module = m;
-		source.namereg_fail = true;
-		name = pa_modargs_get_value(ma, "source_name", NULL);
-		if (name == NULL) {
-			source.namereg_fail = false;
-			snprintf(buf, sizeof (buf), "sndio-source");
-			name = buf;
-		}
-		pa_source_new_data_set_name(&source, name);
-		pa_source_new_data_set_sample_spec(&source, &ss);
-		pa_source_new_data_set_channel_map(&source, &map);
-		pa_proplist_sets(source.proplist,
-		    PA_PROP_DEVICE_STRING, dev ? dev : "default");
-		pa_proplist_sets(source.proplist,
-		    PA_PROP_DEVICE_API, "sndio");
-		pa_proplist_sets(source.proplist,
-		    PA_PROP_DEVICE_DESCRIPTION, dev ? dev : "default");
-		pa_proplist_sets(source.proplist,
-		    PA_PROP_DEVICE_ACCESS_MODE, "serial");
-		pa_proplist_setf(source.proplist,
-		    PA_PROP_DEVICE_BUFFERING_BUFFER_SIZE, "%u",
-		    u->par.bufsz * u->par.bps * u->par.rchan);
-/*
-		pa_proplist_setf(source.proplist,
-		    PA_PROP_DEVICE_BUFFERING_FRAGMENT_SIZE, "%lu",
-		    (unsigned long) (u->in_fragment_size));
-*/
-		if (pa_modargs_get_proplist(ma, "source_properties",
-		    source.proplist, PA_UPDATE_REPLACE) < 0) {
-			pa_log("Invalid source properties");
-			pa_source_new_data_done(&source);
-			goto fail;
-		}
-
-		u->source = pa_source_new(m->core, &source, PA_SOURCE_LATENCY);
-		pa_source_new_data_done(&source);
-		if (u->source == NULL) {
-			pa_log("Failed to create source");
-			goto fail;
-		}
-
-		u->source->userdata = u;
-		u->source->parent.process_msg = sndio_source_message;
-		pa_source_set_asyncmsgq(u->source, u->thread_mq.inq);
-		pa_source_set_rtpoll(u->source, u->rtpoll);
-/*
-		pa_source_set_fixed_latency(u->source,
-		    pa_bytes_to_usec(u->in_hwbuf_size, &u->source->sample_spec));
-*/
+	u->sink = pa_sink_new(m->core, &sink, PA_SINK_LATENCY);
+	pa_sink_new_data_done(&sink);
+	if (u->sink == NULL) {
+		pa_log("Failed to create sync");
+		goto fail;
 	}
+
+	u->sink->userdata = u;
+	u->sink->parent.process_msg = sndio_sink_message;
+	pa_sink_set_asyncmsgq(u->sink, u->thread_mq.inq);
+	pa_sink_set_rtpoll(u->sink, u->rtpoll);
+	pa_sink_set_fixed_latency(u->sink,
+				  pa_bytes_to_usec(u->bufsz, &u->sink->sample_spec));
+
+	sio_onvol(u->hdl, sndio_on_volume, u);
+	pa_sink_set_get_volume_callback(u->sink, sndio_get_volume);
+	pa_sink_set_set_volume_callback(u->sink, sndio_set_volume);
+	u->sink->n_volume_steps = SIO_MAXVOL + 1;
 
 	pa_log_debug("buffer: frame=%u bytes=%zu msec=%u", u->par.bufsz,
 	    u->bufsz, (unsigned int) pa_bytes_to_usec(u->bufsz, &u->sink->sample_spec));
@@ -615,8 +450,6 @@ pa__init(pa_module *m)
 
 	if (u->sink)
 		pa_sink_put(u->sink);
-	if (u->source)
-		pa_source_put(u->source);
 
 	pa_modargs_free(ma);
 
@@ -640,8 +473,6 @@ pa__done(pa_module *m)
 
 	if (u->sink)
 		pa_sink_unlink(u->sink);
-	if (u->source)
-		pa_source_unlink(u->source);
 	if (u->thread) {
 		pa_asyncmsgq_send(u->thread_mq.inq, NULL, PA_MESSAGE_SHUTDOWN,
 		    NULL, 0, NULL);
@@ -651,8 +482,6 @@ pa__done(pa_module *m)
 
 	if (u->sink)
 		pa_sink_unref(u->sink);
-	if (u->source)
-		pa_source_unref(u->source);
 	if (u->memchunk.memblock)
 		pa_memblock_unref(u->memchunk.memblock);
 	if (u->rtpoll_item)
