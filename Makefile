@@ -1,7 +1,7 @@
 MKDIR?=	mkdir -p
 PKGCONF?=	pkg-config
 INSTALL_LIB?=	install -s -m 444
-STAGEDIR?=
+DESTDIR?=
 PULSE_VERSION!=	pulseaudio --version | cut -d' ' -f 2
 PULSE_LIBDIR?=	`${PKGCONF} --variable=libdir libpulse`
 PULSE_MODDIR?=	`${PKGCONF} --variable=modlibexecdir libpulse`
@@ -24,8 +24,8 @@ module-sndio.so: module-sndio.o
 		-o module-sndio.so
 
 install: all
-	${MKDIR} ${STAGEDIR}${PULSE_MODDIR}
-	${INSTALL_LIB} module-sndio.so ${STAGEDIR}${PULSE_MODDIR}
+	${MKDIR} ${DESTDIR}${PULSE_MODDIR}
+	${INSTALL_LIB} module-sndio.so ${DESTDIR}${PULSE_MODDIR}
 
 clean:
 	rm -f module-sndio.o module-sndio.so
