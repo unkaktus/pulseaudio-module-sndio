@@ -138,7 +138,7 @@ sndio_sink_message(pa_msgobject *o, int code, void *data, int64_t offset,
 	int		 ret;
 
 	pa_log_debug(
-	    "sndio_sink_msg: obj=%p code=%i data=%p offset=%lli chunk=%p",
+	    "sndio_sink_msg: obj=%p code=%i data=%p offset=%li chunk=%p",
 	    o, code, data, offset, chunk);
 	switch (code) {
 	case PA_SINK_MESSAGE_GET_LATENCY:
