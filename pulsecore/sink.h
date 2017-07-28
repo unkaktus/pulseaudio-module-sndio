@@ -63,6 +63,12 @@ struct pa_sink {
     pa_core *core;
 
     pa_sink_state_t state;
+
+    /* Set in the beginning of pa_sink_unlink() before setting the sink state
+     * to UNLINKED. The purpose is to prevent moving streams to a sink that is
+     * about to be removed. */
+    bool unlink_requested;
+
     pa_sink_flags_t flags;
     pa_suspend_cause_t suspend_cause;
 
@@ -112,7 +118,7 @@ struct pa_sink {
     pa_atomic_t mixer_dirty;
 
     /* The latency offset is inherited from the currently active port */
-    int64_t latency_offset;
+    int64_t port_latency_offset;
 
     unsigned priority;
 
@@ -281,8 +287,8 @@ struct pa_sink {
          * in changing it */
         pa_usec_t fixed_latency; /* for sinks with PA_SINK_DYNAMIC_LATENCY this is 0 */
 
-        /* This latency offset is a direct copy from s->latency_offset */
-        int64_t latency_offset;
+        /* This latency offset is a direct copy from s->port_latency_offset */
+        int64_t port_latency_offset;
 
         /* Delayed volume change events are queued here. The events
          * are stored in expiration order. The one expiring next is in
@@ -331,7 +337,7 @@ typedef enum pa_sink_message {
     PA_SINK_MESSAGE_SET_MAX_REQUEST,
     PA_SINK_MESSAGE_SET_PORT,
     PA_SINK_MESSAGE_UPDATE_VOLUME_AND_MUTE,
-    PA_SINK_MESSAGE_SET_LATENCY_OFFSET,
+    PA_SINK_MESSAGE_SET_PORT_LATENCY_OFFSET,
     PA_SINK_MESSAGE_MAX
 } pa_sink_message_t;
 
@@ -417,7 +423,7 @@ unsigned pa_device_init_priority(pa_proplist *p);
 /**** May be called by everyone, from main context */
 
 int pa_sink_update_rate(pa_sink *s, uint32_t rate, bool passthrough);
-void pa_sink_set_latency_offset(pa_sink *s, int64_t offset);
+void pa_sink_set_port_latency_offset(pa_sink *s, int64_t offset);
 
 /* The returned value is supposed to be in the time domain of the sound card! */
 pa_usec_t pa_sink_get_latency(pa_sink *s);
@@ -460,7 +466,14 @@ void pa_sink_set_mixer_dirty(pa_sink *s, bool is_dirty);
 
 unsigned pa_sink_linked_by(pa_sink *s); /* Number of connected streams */
 unsigned pa_sink_used_by(pa_sink *s); /* Number of connected streams which are not corked */
-unsigned pa_sink_check_suspend(pa_sink *s); /* Returns how many streams are active that don't allow suspensions */
+
+/* Returns how many streams are active that don't allow suspensions. If
+ * "ignore_input" or "ignore_output" is non-NULL, that stream is not included
+ * in the count (the returned count includes the value from
+ * pa_source_check_suspend(), which is called for the monitor source, so that's
+ * why "ignore_output" may be relevant). */
+unsigned pa_sink_check_suspend(pa_sink *s, pa_sink_input *ignore_input, pa_source_output *ignore_output);
+
 #define pa_sink_get_state(s) ((s)->state)
 
 /* Moves all inputs away, and stores them in pa_queue */
@@ -513,7 +526,7 @@ void pa_sink_request_rewind(pa_sink*s, size_t nbytes);
 
 void pa_sink_invalidate_requested_latency(pa_sink *s, bool dynamic);
 
-pa_usec_t pa_sink_get_latency_within_thread(pa_sink *s);
+int64_t pa_sink_get_latency_within_thread(pa_sink *s, bool allow_negative);
 
 /* Called from the main thread, from sink-input.c only. The normal way to set
  * the sink reference volume is to call pa_sink_set_volume(), but the flat

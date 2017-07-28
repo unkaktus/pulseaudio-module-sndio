@@ -335,8 +335,6 @@ int pa_sink_input_new(
 void pa_sink_input_put(pa_sink_input *i);
 void pa_sink_input_unlink(pa_sink_input* i);
 
-void pa_sink_input_set_name(pa_sink_input *i, const char *name);
-
 pa_usec_t pa_sink_input_set_requested_latency(pa_sink_input *i, pa_usec_t usec);
 
 /* Request that the specified number of bytes already written out to
@@ -373,6 +371,8 @@ pa_cvolume *pa_sink_input_get_volume(pa_sink_input *i, pa_cvolume *volume, bool 
 
 void pa_sink_input_set_mute(pa_sink_input *i, bool mute, bool save);
 
+void pa_sink_input_set_property(pa_sink_input *i, const char *key, const char *value);
+void pa_sink_input_set_property_arbitrary(pa_sink_input *i, const char *key, const uint8_t *value, size_t nbytes);
 void pa_sink_input_update_proplist(pa_sink_input *i, pa_update_mode_t mode, pa_proplist *p);
 
 pa_resample_method_t pa_sink_input_get_resample_method(pa_sink_input *i);
@@ -412,6 +412,31 @@ bool pa_sink_input_safe_to_remove(pa_sink_input *i);
 bool pa_sink_input_process_underrun(pa_sink_input *i);
 
 pa_memchunk* pa_sink_input_get_silence(pa_sink_input *i, pa_memchunk *ret);
+
+/* Calls the attach() callback if it's set. The input must be in detached
+ * state. */
+void pa_sink_input_attach(pa_sink_input *i);
+
+/* Calls the detach() callback if it's set and the input is attached. The input
+ * is allowed to be already detached, in which case this does nothing.
+ *
+ * The reason why this can be called for already-detached inputs is that when
+ * a filter sink's input is detached, it has to detach also all inputs
+ * connected to the filter sink. In case the filter sink's input was detached
+ * because the filter sink is being removed, those other inputs will be moved
+ * to another sink or removed, and moving and removing involve detaching the
+ * inputs, but the inputs at that point are already detached.
+ *
+ * XXX: Moving or removing an input also involves sending messages to the
+ * input's sink. If the input's sink is a detached filter sink, shouldn't
+ * sending messages to it be prohibited? The messages are processed in the
+ * root sink's IO thread, and when the filter sink is detached, it would seem
+ * logical to prohibit any interaction with the IO thread that isn't any more
+ * associated with the filter sink. Currently sending messages to detached
+ * filter sinks mostly works, because the filter sinks don't update their
+ * asyncmsgq pointer when detaching, so messages still find their way to the
+ * old IO thread. */
+void pa_sink_input_detach(pa_sink_input *i);
 
 /* Called from the main thread, from sink.c only. The normal way to set the
  * sink input volume is to call pa_sink_input_set_volume(), but the flat volume

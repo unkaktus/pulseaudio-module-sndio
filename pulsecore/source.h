@@ -64,6 +64,12 @@ struct pa_source {
     pa_core *core;
 
     pa_source_state_t state;
+
+    /* Set in the beginning of pa_source_unlink() before setting the source
+     * state to UNLINKED. The purpose is to prevent moving streams to a source
+     * that is about to be removed. */
+    bool unlink_requested;
+
     pa_source_flags_t flags;
     pa_suspend_cause_t suspend_cause;
 
@@ -113,7 +119,7 @@ struct pa_source {
     pa_atomic_t mixer_dirty;
 
     /* The latency offset is inherited from the currently active port */
-    int64_t latency_offset;
+    int64_t port_latency_offset;
 
     unsigned priority;
 
@@ -223,8 +229,8 @@ struct pa_source {
 
         pa_usec_t fixed_latency; /* for sources with PA_SOURCE_DYNAMIC_LATENCY this is 0 */
 
-        /* This latency offset is a direct copy from s->latency_offset */
-        int64_t latency_offset;
+        /* This latency offset is a direct copy from s->port_latency_offset */
+        int64_t port_latency_offset;
 
         /* Delayed volume change events are queued here. The events
          * are stored in expiration order. The one expiring next is in
@@ -269,7 +275,7 @@ typedef enum pa_source_message {
     PA_SOURCE_MESSAGE_SET_MAX_REWIND,
     PA_SOURCE_MESSAGE_SET_PORT,
     PA_SOURCE_MESSAGE_UPDATE_VOLUME_AND_MUTE,
-    PA_SOURCE_MESSAGE_SET_LATENCY_OFFSET,
+    PA_SOURCE_MESSAGE_SET_PORT_LATENCY_OFFSET,
     PA_SOURCE_MESSAGE_MAX
 } pa_source_message_t;
 
@@ -350,7 +356,7 @@ void pa_source_update_flags(pa_source *s, pa_source_flags_t mask, pa_source_flag
 
 /*** May be called by everyone, from main context */
 
-void pa_source_set_latency_offset(pa_source *s, int64_t offset);
+void pa_source_set_port_latency_offset(pa_source *s, int64_t offset);
 
 /* The returned value is supposed to be in the time domain of the sound card! */
 pa_usec_t pa_source_get_latency(pa_source *s);
@@ -394,7 +400,11 @@ int pa_source_update_rate(pa_source *s, uint32_t rate, bool passthrough);
 
 unsigned pa_source_linked_by(pa_source *s); /* Number of connected streams */
 unsigned pa_source_used_by(pa_source *s); /* Number of connected streams that are not corked */
-unsigned pa_source_check_suspend(pa_source *s); /* Returns how many streams are active that don't allow suspensions */
+
+/* Returns how many streams are active that don't allow suspensions. If
+ * "ignore" is non-NULL, that stream is not included in the count. */
+unsigned pa_source_check_suspend(pa_source *s, pa_source_output *ignore);
+
 #define pa_source_get_state(s) ((pa_source_state_t) (s)->state)
 
 /* Moves all inputs away, and stores them in pa_queue */
@@ -437,7 +447,7 @@ bool pa_source_volume_change_apply(pa_source *s, pa_usec_t *usec_to_next);
 /*** To be called exclusively by source output drivers, from IO context */
 
 void pa_source_invalidate_requested_latency(pa_source *s, bool dynamic);
-pa_usec_t pa_source_get_latency_within_thread(pa_source *s);
+int64_t pa_source_get_latency_within_thread(pa_source *s, bool allow_negative);
 
 /* Called from the main thread, from source-output.c only. The normal way to
  * set the source reference volume is to call pa_source_set_volume(), but the
