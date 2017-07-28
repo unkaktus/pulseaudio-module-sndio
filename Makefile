@@ -2,7 +2,7 @@ MKDIR?=	mkdir -p
 PKGCONF?=	pkg-config
 INSTALL_LIB?=	install -s -m 444
 DESTDIR?=
-PULSE_VERSION!=	pulseaudio --version | cut -d' ' -f 2
+PULSE_VERSION!=	pulseaudio --version | cut -d' ' -f 2 | cut -d. -f 1-2
 PULSE_LIBDIR?=	`${PKGCONF} --variable=libdir libpulse`
 PULSE_MODDIR?=	`${PKGCONF} --variable=modlibexecdir libpulse`
 CFLAGS+=	-fPIC -I. `${PKGCONF} --cflags libpulse`
